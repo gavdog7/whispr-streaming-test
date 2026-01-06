@@ -18,7 +18,8 @@ class BenchmarkRunner {
         ("openai_whisper-large-v3", "1.5 GB")
     ]
 
-    private let minimumRecordingDuration: TimeInterval = 20.0
+    /// Fixed recording duration (no manual stop)
+    private let recordingDuration: TimeInterval = 35.0
 
     /// Track used passages to avoid repetition
     private var usedPassageIndices: Set<Int> = []
@@ -178,9 +179,9 @@ class BenchmarkRunner {
         usedPassageIndices.insert(passageIndex)
 
         // Show instructions with the selected passage
-        display.showTestInstructions(passage: passage)
+        display.showTestInstructions(passage: passage, duration: Int(recordingDuration))
 
-        // Wait for user to press Enter
+        // Wait for user to press Enter to start
         display.waitForEnter()
 
         // Start recording
@@ -228,30 +229,24 @@ class BenchmarkRunner {
         metricsCollector.startTest()
         try audioCapture.startCapture()
 
-        // Recording loop - update display every second
-        var lastDuration: Int = 0
+        // Recording loop with fixed duration countdown
+        var lastDisplayedSecond: Int = -1
         while true {
             try await Task.sleep(nanoseconds: 100_000_000)  // 100ms
 
-            let duration = audioCapture.currentDuration
-            let seconds = Int(duration)
+            let elapsed = audioCapture.currentDuration
+            let remaining = max(0, recordingDuration - elapsed)
+            let remainingSeconds = Int(remaining)
 
-            if seconds != lastDuration {
-                display.showRecordingStatus(seconds: seconds)
-                lastDuration = seconds
+            // Update display every second
+            if remainingSeconds != lastDisplayedSecond {
+                display.showRecordingCountdown(remaining: remainingSeconds, total: Int(recordingDuration))
+                lastDisplayedSecond = remainingSeconds
             }
 
-            // Check for Enter key (non-blocking would be ideal, but for simplicity we check duration)
-            // In a real implementation, we'd use a separate thread for input
-            // For now, we'll use a fixed duration or require Ctrl+C
-
-            // Check if minimum duration reached and user might want to stop
-            if duration >= minimumRecordingDuration {
-                // For this implementation, let's auto-stop at ~35 seconds
-                // A proper implementation would use non-blocking stdin
-                if duration >= 35 {
-                    break
-                }
+            // Stop when time is up
+            if elapsed >= recordingDuration {
+                break
             }
         }
 

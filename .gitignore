@@ -1,1 +1,22 @@
+# macOS
 .DS_Store
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# Results (keep local)
+*.json

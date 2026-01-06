@@ -1,21 +1,33 @@
 import Foundation
 import WhisperKit
 
-/// Wraps WhisperKit for streaming transcription with LocalAgreement-n confirmation
+/// Wraps WhisperKit for streaming transcription using cumulative buffer approach
 @MainActor
 class LiveTranscriber {
     private var whisperKit: WhisperKit?
     private let display: TerminalDisplay
     private let verbose: Bool
 
-    /// LocalAgreement-n parameters
-    private let confirmationWindow = 3  // Number of consecutive chunks for confirmation
-    private let unconfirmedTokenCount = 2  // Last n tokens are unconfirmed
+    /// Accumulated audio buffer (all samples since recording started)
+    private var audioBuffer: [Float] = []
+    private let sampleRate: Double = 16000
 
-    /// Token history for LocalAgreement confirmation
-    private var tokenHistory: [[String]] = []
+    /// Maximum audio to transcribe at once (30 seconds)
+    /// Longer recordings use a sliding window from the end
+    private let maxTranscriptionDuration: TimeInterval = 30.0
+    private var maxSamples: Int {
+        Int(sampleRate * maxTranscriptionDuration)
+    }
+
+    /// Previous transcription for comparison
+    private var previousTranscription: String = ""
+
+    /// Current confirmed and unconfirmed text
     private var confirmedText: String = ""
     private var unconfirmedText: String = ""
+
+    /// Number of trailing words to treat as unconfirmed (may still change)
+    private let unconfirmedWordCount = 3
 
     /// Callbacks
     var onTranscriptionUpdate: ((String, String) -> Void)?  // (confirmed, unconfirmed)
@@ -42,15 +54,36 @@ class LiveTranscriber {
         return Date().timeIntervalSince(startTime)
     }
 
-    /// Check if a model exists locally
+    /// Check if a model exists locally using WhisperKit's cache structure
     func modelExists(name: String) async -> Bool {
         // WhisperKit stores models in ~/Library/Caches/com.argmax.whisperkit/
-        // Check if the model directory exists
+        // Check both possible locations
         let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
         let whisperKitDir = cacheDir.appendingPathComponent("com.argmax.whisperkit")
-        let modelDir = whisperKitDir.appendingPathComponent(name)
 
-        return FileManager.default.fileExists(atPath: modelDir.path)
+        // Check direct path
+        let directPath = whisperKitDir.appendingPathComponent(name)
+        if FileManager.default.fileExists(atPath: directPath.path) {
+            return true
+        }
+
+        // Check HuggingFace cache structure
+        let hfPath = whisperKitDir
+            .appendingPathComponent("huggingface")
+            .appendingPathComponent("models--argmaxinc--whisperkit-coreml")
+
+        // Look for model in snapshots
+        let snapshotsPath = hfPath.appendingPathComponent("snapshots")
+        if let snapshots = try? FileManager.default.contentsOfDirectory(atPath: snapshotsPath.path) {
+            for snapshot in snapshots {
+                let modelPath = snapshotsPath.appendingPathComponent(snapshot).appendingPathComponent(name)
+                if FileManager.default.fileExists(atPath: modelPath.path) {
+                    return true
+                }
+            }
+        }
+
+        return false
     }
 
     /// Get available models
@@ -58,11 +91,33 @@ class LiveTranscriber {
         let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
         let whisperKitDir = cacheDir.appendingPathComponent("com.argmax.whisperkit")
 
-        guard let contents = try? FileManager.default.contentsOfDirectory(atPath: whisperKitDir.path) else {
-            return []
+        var models: Set<String> = []
+
+        // Check direct path
+        if let contents = try? FileManager.default.contentsOfDirectory(atPath: whisperKitDir.path) {
+            for item in contents where item.hasPrefix("openai_whisper-") {
+                models.insert(item)
+            }
         }
 
-        return contents.filter { $0.hasPrefix("openai_whisper-") }.sorted()
+        // Check HuggingFace cache structure
+        let hfPath = whisperKitDir
+            .appendingPathComponent("huggingface")
+            .appendingPathComponent("models--argmaxinc--whisperkit-coreml")
+            .appendingPathComponent("snapshots")
+
+        if let snapshots = try? FileManager.default.contentsOfDirectory(atPath: hfPath.path) {
+            for snapshot in snapshots {
+                let snapshotPath = hfPath.appendingPathComponent(snapshot)
+                if let contents = try? FileManager.default.contentsOfDirectory(atPath: snapshotPath.path) {
+                    for item in contents where item.hasPrefix("openai_whisper-") {
+                        models.insert(item)
+                    }
+                }
+            }
+        }
+
+        return models.sorted()
     }
 
     /// Run warmup inference
@@ -72,31 +127,48 @@ class LiveTranscriber {
         }
 
         // Create a short silent audio buffer for warmup
-        let sampleRate = 16000
         let duration = 1.0  // 1 second
-        let samples = [Float](repeating: 0.0, count: Int(Double(sampleRate) * duration))
+        let samples = [Float](repeating: 0.0, count: Int(sampleRate * duration))
 
         // Run inference (result discarded)
         _ = try await whisper.transcribe(audioArray: samples)
     }
 
-    /// Transcribe an audio chunk and update state
+    /// Add audio samples to the buffer and transcribe
     func transcribeChunk(_ samples: [Float]) async throws -> TimeInterval {
         guard let whisper = whisperKit else {
             throw TranscriberError.modelNotLoaded
         }
 
+        // Accumulate audio
+        audioBuffer.append(contentsOf: samples)
+
+        // Get audio to transcribe (use sliding window if too long)
+        let samplesToTranscribe: [Float]
+        if audioBuffer.count > maxSamples {
+            // Use last maxSamples for transcription
+            samplesToTranscribe = Array(audioBuffer.suffix(maxSamples))
+        } else {
+            samplesToTranscribe = audioBuffer
+        }
+
+        // Skip if we don't have enough audio yet (at least 1 second)
+        let minSamples = Int(sampleRate * 1.0)
+        guard samplesToTranscribe.count >= minSamples else {
+            return 0
+        }
+
         let startTime = Date()
 
-        // Transcribe the chunk
-        let results = try await whisper.transcribe(audioArray: samples)
+        // Transcribe the accumulated buffer
+        let results = try await whisper.transcribe(audioArray: samplesToTranscribe)
 
         let processingTime = Date().timeIntervalSince(startTime)
 
-        // Extract tokens from result
+        // Process result
         if let result = results.first {
-            let tokens = extractTokens(from: result)
-            updateConfirmation(with: tokens)
+            let newTranscription = cleanTranscription(result.text)
+            updateConfirmedText(newTranscription: newTranscription)
 
             // Check for first word
             if !hasEmittedFirstWord && !confirmedText.isEmpty {
@@ -106,6 +178,8 @@ class LiveTranscriber {
 
             // Notify of update
             onTranscriptionUpdate?(confirmedText, unconfirmedText)
+
+            previousTranscription = newTranscription
         }
 
         return processingTime
@@ -125,7 +199,8 @@ class LiveTranscriber {
 
     /// Reset state for a new test
     func reset() {
-        tokenHistory.removeAll()
+        audioBuffer.removeAll()
+        previousTranscription = ""
         confirmedText = ""
         unconfirmedText = ""
         hasEmittedFirstWord = false
@@ -137,75 +212,69 @@ class LiveTranscriber {
         reset()
     }
 
-    // MARK: - LocalAgreement-n Implementation
+    // MARK: - Private Helpers
 
-    private func extractTokens(from result: TranscriptionResult) -> [String] {
-        // Get text and split into words/tokens
-        let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+    /// Clean up transcription text
+    private func cleanTranscription(_ text: String) -> String {
+        var cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Remove common Whisper artifacts
+        let artifacts = ["[BLANK_AUDIO]", "(BLANK_AUDIO)", "[MUSIC]", "(MUSIC)"]
+        for artifact in artifacts {
+            cleaned = cleaned.replacingOccurrences(of: artifact, with: "")
+        }
+
+        // Collapse multiple spaces
+        while cleaned.contains("  ") {
+            cleaned = cleaned.replacingOccurrences(of: "  ", with: " ")
+        }
+
+        return cleaned.trimmingCharacters(in: .whitespaces)
     }
 
-    private func updateConfirmation(with newTokens: [String]) {
-        // Add to history
-        tokenHistory.append(newTokens)
+    /// Update confirmed/unconfirmed text based on new transcription
+    private func updateConfirmedText(newTranscription: String) {
+        let newWords = newTranscription.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
 
-        // Keep only recent history for confirmation window
-        if tokenHistory.count > confirmationWindow {
-            tokenHistory.removeFirst()
+        guard !newWords.isEmpty else {
+            unconfirmedText = ""
+            return
         }
 
-        // Find confirmed tokens using LocalAgreement
-        // A token is confirmed if it appears in the same position in `confirmationWindow` consecutive chunks
-        var confirmed: [String] = []
-        var unconfirmed: [String] = []
+        // Compare with previous transcription to find stable prefix
+        let previousWords = previousTranscription.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
 
-        guard let latestTokens = tokenHistory.last else { return }
-
-        // For each token in the latest result
-        for (index, token) in latestTokens.enumerated() {
-            // Check if this token appears at this position in all recent chunks
-            var appearsInAll = true
-
-            if tokenHistory.count >= confirmationWindow {
-                for i in 0..<confirmationWindow {
-                    let historyIndex = tokenHistory.count - confirmationWindow + i
-                    let historicalTokens = tokenHistory[historyIndex]
-
-                    if index >= historicalTokens.count || historicalTokens[index] != token {
-                        appearsInAll = false
-                        break
-                    }
-                }
+        // Find how many words match from the start
+        var matchingCount = 0
+        for i in 0..<min(previousWords.count, newWords.count) {
+            if previousWords[i].lowercased() == newWords[i].lowercased() {
+                matchingCount = i + 1
             } else {
-                // Not enough history yet - nothing confirmed
-                appearsInAll = false
-            }
-
-            if appearsInAll {
-                confirmed.append(token)
-            } else if index >= latestTokens.count - unconfirmedTokenCount {
-                // Last n tokens are always unconfirmed
-                unconfirmed.append(token)
-            } else {
-                // In the middle - tentatively confirmed but keep in unconfirmed display
-                unconfirmed.append(token)
+                break
             }
         }
 
-        // Update state
-        // Confirmed text accumulates; we only add newly confirmed tokens
-        let newConfirmedCount = confirmed.count
-        let previousConfirmedCount = confirmedText.components(separatedBy: .whitespaces).filter { !$0.isEmpty }.count
+        // Words that matched previous transcription are more stable
+        // But always keep the last few words as "unconfirmed" since they may change
+        let stableCount = max(0, min(matchingCount, newWords.count - unconfirmedWordCount))
 
-        if newConfirmedCount > previousConfirmedCount {
-            let newlyConfirmed = confirmed.suffix(newConfirmedCount - previousConfirmedCount)
-            if !confirmedText.isEmpty {
+        // Update confirmed text (only add newly confirmed words)
+        let currentConfirmedWords = confirmedText.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+        if stableCount > currentConfirmedWords.count {
+            let newlyConfirmed = newWords[currentConfirmedWords.count..<stableCount]
+            if !confirmedText.isEmpty && !newlyConfirmed.isEmpty {
                 confirmedText += " "
             }
             confirmedText += newlyConfirmed.joined(separator: " ")
         }
 
-        unconfirmedText = unconfirmed.joined(separator: " ")
+        // Unconfirmed is everything after confirmed
+        let confirmedWordCount = confirmedText.components(separatedBy: .whitespaces).filter { !$0.isEmpty }.count
+        if confirmedWordCount < newWords.count {
+            unconfirmedText = newWords[confirmedWordCount...].joined(separator: " ")
+        } else {
+            unconfirmedText = ""
+        }
     }
 }
 

@@ -112,11 +112,11 @@ class TerminalDisplay {
         }
     }
 
-    func showTestInstructions(passage: String) {
+    func showTestInstructions(passage: String, duration: Int) {
         print("")
         showReferencePassage(passage)
-        print("Press \(bold)ENTER\(reset) to start recording (minimum 20s, target 30s).")
-        print("Press \(bold)ENTER\(reset) again to stop.\n")
+        print("Recording will run for \(bold)\(duration) seconds\(reset) automatically.")
+        print("Press \(bold)ENTER\(reset) to start recording.\n")
     }
 
     /// Display the reference passage in a bordered box
@@ -159,9 +159,12 @@ class TerminalDisplay {
         return 80  // Conservative default
     }
 
-    func showRecordingStatus(seconds: Int) {
+    func showRecordingCountdown(remaining: Int, total: Int) {
         let indicator = "\(red)●\(reset)"
-        print("\(clearLine)\(cursorToStart)Recording... \(indicator) [\(String(format: "%02d", seconds / 60)):\(String(format: "%02d", seconds % 60))]", terminator: "")
+        let elapsed = total - remaining
+        let progress = String(repeating: "█", count: elapsed * 20 / total) +
+                       String(repeating: "░", count: 20 - (elapsed * 20 / total))
+        print("\(clearLine)\(cursorToStart)Recording \(indicator) [\(progress)] \(remaining)s remaining", terminator: "")
         fflush(stdout)
     }
 

@@ -52,26 +52,26 @@ Phase 1 (Infrastructure) → Phase 2 (Streaming) → Phase 3 (Benchmark Logic)
 
 <!-- Update this section as you work. Mark items [x] when complete. -->
 
-- [ ] Phase 1: Basic Infrastructure
-  - [ ] Create Package.swift with WhisperKit + ArgumentParser dependencies
-  - [ ] Verify package builds
-  - [ ] Implement AudioCapture.swift (AVFoundation, 16kHz, start/stop)
-  - [ ] Implement TerminalDisplay.swift (ANSI escape codes, live updates)
-  - [ ] Implement main.swift with ArgumentParser command structure
+- [x] Phase 1: Basic Infrastructure
+  - [x] Create Package.swift with WhisperKit + ArgumentParser dependencies
+  - [x] Verify package builds
+  - [x] Implement AudioCapture.swift (AVFoundation, 16kHz, start/stop)
+  - [x] Implement TerminalDisplay.swift (ANSI escape codes, live updates)
+  - [x] Implement StreamingBenchmarkCommand.swift with ArgumentParser command structure
 
-- [ ] Phase 2: Streaming Integration
-  - [ ] Implement LiveTranscriber.swift (WhisperKit streaming wrapper)
-  - [ ] Configure segmentDiscoveryCallback for streaming
-  - [ ] Implement LocalAgreement-2 confirmation logic
-  - [ ] Display confirmed vs unconfirmed tokens
+- [x] Phase 2: Streaming Integration
+  - [x] Implement LiveTranscriber.swift (WhisperKit streaming wrapper)
+  - [x] Configure transcription callback for streaming
+  - [x] Implement LocalAgreement-2 confirmation logic
+  - [x] Display confirmed vs unconfirmed tokens
 
-- [ ] Phase 3: Benchmark Logic
-  - [ ] Implement BenchmarkRunner.swift (model progression, warmup)
-  - [ ] Implement Metrics.swift (timing, processing ratio, backpressure)
-  - [ ] Implement ComputeInfo.swift (ANE/GPU detection)
-  - [ ] Implement ResultsReporter.swift (summary table, JSON export)
-  - [ ] Add user quality assessment prompt
-  - [ ] Test with all 5 models
+- [x] Phase 3: Benchmark Logic
+  - [x] Implement BenchmarkRunner.swift (model progression, warmup)
+  - [x] Implement Metrics.swift (timing, processing ratio, backpressure)
+  - [x] Implement ComputeInfo.swift (ANE/GPU detection)
+  - [x] Implement ResultsReporter.swift (summary table, JSON export)
+  - [x] Add user quality assessment prompt
+  - [ ] Test with all 5 models (requires model downloads)
 
 ---
 
@@ -101,7 +101,7 @@ whisper-streaming-benchmark/
 │   └── streaming-benchmark-test.md  # Implementation plan
 └── Sources/
     └── StreamingBenchmark/
-        ├── main.swift               # Entry point, ArgumentParser command
+        ├── StreamingBenchmarkCommand.swift  # Entry point, ArgumentParser command
         ├── BenchmarkRunner.swift    # Test orchestration, model progression
         ├── LiveTranscriber.swift    # WhisperKit streaming wrapper
         ├── AudioCapture.swift       # Microphone input (AVFoundation)
@@ -247,7 +247,7 @@ When stuck:
 | What | Where |
 |------|-------|
 | Implementation plan | `docs/streaming-benchmark-test.md` |
-| CLI entry point | `Sources/StreamingBenchmark/main.swift` |
+| CLI entry point | `Sources/StreamingBenchmark/StreamingBenchmarkCommand.swift` |
 | Test orchestration | `Sources/StreamingBenchmark/BenchmarkRunner.swift` |
 | WhisperKit streaming | `Sources/StreamingBenchmark/LiveTranscriber.swift` |
 | Audio capture | `Sources/StreamingBenchmark/AudioCapture.swift` |
